@@ -21,7 +21,9 @@ Your polygon layer needs a text field, usually called:
 validation
 ```
 
-## Defualt shortcut values
+## Default shortcut values
+
+Modify as needed. 
 
 ```text
 {
@@ -38,7 +40,7 @@ validation
 }
 ```
 
-## Defualt shortcut values
+## Usage
 
 1. Open Check-a-Kea from the QGIS plugin menu.
 1. Select a polygon layer.
