@@ -3,7 +3,7 @@ name=Check-a-Kea
 qgisMinimumVersion=3.28
 description=Shortcut-based polygon validation for QGIS.
 about=Check-a-Kea helps users jump between polygon features and quickly write configurable validation values to a single attribute field using keyboard shortcuts. It is designed for fast manual QA of land-use and polygon classification layers.
-version=0.1.0
+version=0.2.0
 author=James Ardo
 email=ardoj@landcareresearch.co.nz
 
