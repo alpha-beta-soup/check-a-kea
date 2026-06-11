@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from html import escape
 
 from qgis.PyQt.QtWidgets import (
     QAction,
@@ -11,6 +12,11 @@ from qgis.PyQt.QtWidgets import (
     QPushButton,
     QComboBox,
     QShortcut,
+    QTextEdit,
+    QDialog,
+    QPlainTextEdit,
+    QDialogButtonBox,
+    QMessageBox,
 )
 from qgis.PyQt.QtGui import QKeySequence, QIcon
 from qgis.PyQt.QtCore import Qt, QTimer
@@ -24,6 +30,46 @@ from qgis.core import (
 from qgis.gui import QgsHighlight
 
 
+class JsonConfigDialog(QDialog):
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Edit Check-a-Kea config")
+        self.resize(600, 520)
+
+        self.config = config
+
+        layout = QVBoxLayout(self)
+
+        self.editor = QPlainTextEdit()
+        self.editor.setPlainText(json.dumps(config, indent=2))
+        self.editor.setTabChangesFocus(False)
+
+        layout.addWidget(QLabel("Edit config.json directly, then click Save."))
+        layout.addWidget(self.editor)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        layout.addWidget(button_box)
+
+    def accept(self):
+        try:
+            self.config = json.loads(self.editor.toPlainText())
+        except json.JSONDecodeError as error:
+            QMessageBox.warning(
+                self,
+                "Invalid JSON",
+                f"Could not save config because the JSON is invalid:\n\n{error}"
+            )
+            return
+
+        super().accept()
+
+
 class CheckAKea:
     def __init__(self, iface):
         self.iface = iface
@@ -31,9 +77,15 @@ class CheckAKea:
 
         self.action = None
         self.dock = None
+
         self.layer_combo = None
         self.display_field_combo = None
         self.status_label = None
+
+        self.validation_controls_widget = None
+        self.comment_controls_widget = None
+        self.comment_box = None
+        self.save_comment_button = None
 
         self.layer = None
         self.feature_ids = []
@@ -44,18 +96,25 @@ class CheckAKea:
 
         self.waiting_to_advance = False
 
+        self.plugin_dir = Path(__file__).parent
+        self.config_path = self.plugin_dir / "config.json"
         self.config = self.load_config()
 
     def load_config(self):
-        plugin_dir = Path(__file__).parent
-        config_path = plugin_dir / "config.json"
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
 
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        if "comment_field" not in config:
+            config["comment_field"] = "comment"
+
+        return config
+
+    def save_config(self):
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump(self.config, f, indent=2)
 
     def initGui(self):
-        plugin_dir = Path(__file__).parent
-        icon_path = plugin_dir / "icon.png"
+        icon_path = self.plugin_dir / "icon.png"
 
         if icon_path.exists():
             self.action = QAction(
@@ -101,8 +160,38 @@ class CheckAKea:
 
         self.layer_combo = QComboBox()
         self.layer_combo.currentIndexChanged.connect(
-            lambda _: self.refresh_display_field_combo()
+            lambda _: self.layer_selection_changed()
         )
+
+        refresh_layers_button = QPushButton("Refresh layer list")
+        refresh_layers_button.clicked.connect(self.refresh_layer_combo)
+
+        start_button = QPushButton("Start / refresh queue")
+        start_button.clicked.connect(self.start_validation)
+
+        config_button = QPushButton("Edit config / shortcuts")
+        config_button.clicked.connect(self.open_config_dialog)
+
+        reload_config_button = QPushButton("Reload config")
+        reload_config_button.clicked.connect(self.reload_config)
+
+        config_layout = QHBoxLayout()
+        config_layout.addWidget(config_button)
+        config_layout.addWidget(reload_config_button)
+
+        self.status_label = QLabel("Choose a polygon layer, then start the queue.")
+        self.status_label.setWordWrap(True)
+        self.status_label.setTextFormat(Qt.RichText)
+
+        layout.addWidget(QLabel("Target polygon layer"))
+        layout.addWidget(self.layer_combo)
+        layout.addWidget(refresh_layers_button)
+        layout.addWidget(start_button)
+        layout.addLayout(config_layout)
+
+        self.validation_controls_widget = QWidget()
+        validation_layout = QVBoxLayout(self.validation_controls_widget)
+        validation_layout.setContentsMargins(0, 0, 0, 0)
 
         self.display_field_combo = QComboBox()
         self.display_field_combo.currentIndexChanged.connect(
@@ -111,14 +200,6 @@ class CheckAKea:
         self.display_field_combo.setToolTip(
             "Choose an attribute field to display for the current polygon."
         )
-
-        self.refresh_layer_combo()
-
-        refresh_layers_button = QPushButton("Refresh layer list")
-        refresh_layers_button.clicked.connect(self.refresh_layer_combo)
-
-        start_button = QPushButton("Start / refresh queue")
-        start_button.clicked.connect(self.start_validation)
 
         previous_button = QPushButton("◀ Previous")
         previous_button.clicked.connect(self.previous_feature)
@@ -132,30 +213,80 @@ class CheckAKea:
         nav_layout.addWidget(previous_button)
         nav_layout.addWidget(next_button)
 
-        reload_config_button = QPushButton("Reload config")
-        reload_config_button.clicked.connect(self.reload_config)
+        validation_layout.addWidget(QLabel("Attribute to display"))
+        validation_layout.addWidget(self.display_field_combo)
+        validation_layout.addLayout(nav_layout)
 
-        self.status_label = QLabel("Choose a polygon layer and start.")
-        self.status_label.setWordWrap(True)
+        self.comment_controls_widget = QWidget()
+        comment_layout = QVBoxLayout(self.comment_controls_widget)
+        comment_layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(QLabel("Target polygon layer"))
-        layout.addWidget(self.layer_combo)
-        layout.addWidget(refresh_layers_button)
+        self.comment_box = QTextEdit()
+        self.comment_box.setPlaceholderText(
+            "Write an optional comment for this polygon..."
+        )
+        self.comment_box.setMinimumHeight(70)
 
-        layout.addWidget(QLabel("Attribute to display"))
-        layout.addWidget(self.display_field_combo)
+        self.save_comment_button = QPushButton("Save comment")
+        self.save_comment_button.clicked.connect(
+            lambda: self.save_comment_for_current_feature(silent=False)
+        )
 
-        layout.addWidget(start_button)
-        layout.addLayout(nav_layout)
-        layout.addWidget(reload_config_button)
+        comment_layout.addWidget(QLabel("Comment"))
+        comment_layout.addWidget(self.comment_box)
+        comment_layout.addWidget(self.save_comment_button)
+
+        layout.addWidget(self.validation_controls_widget)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.comment_controls_widget)
 
         widget.setLayout(layout)
         self.dock.setWidget(widget)
 
         self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock)
 
+        self.refresh_layer_combo()
+        self.set_validation_controls_visible(False)
         self.register_shortcuts()
+
+    def set_validation_controls_visible(self, visible):
+        if self.validation_controls_widget is not None:
+            self.validation_controls_widget.setVisible(visible)
+
+        if self.comment_controls_widget is not None:
+            self.comment_controls_widget.setVisible(visible)
+
+    def clear_active_queue(self):
+        self.waiting_to_advance = False
+        self.layer = None
+        self.feature_ids = []
+        self.index = -1
+
+        self.clear_highlight()
+        self.clear_comment_box()
+        self.set_validation_controls_visible(False)
+
+    def layer_selection_changed(self):
+        self.clear_active_queue()
+        self.refresh_display_field_combo()
+
+        if self.status_label:
+            self.status_label.setText(
+                "Layer changed. Click Start / refresh queue to begin."
+            )
+
+    def open_config_dialog(self):
+        dialog = JsonConfigDialog(self.config, self.iface.mainWindow())
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        self.config = dialog.config
+        self.save_config()
+        self.reload_config()
+
+        if self.status_label:
+            self.status_label.setText("Config saved and reloaded.")
 
     def reload_config(self):
         self.config = self.load_config()
@@ -166,7 +297,7 @@ class CheckAKea:
         if self.status_label:
             delay_ms = self.config.get("auto_advance_delay_ms", 100)
             self.status_label.setText(
-                f"Config reloaded.\nAuto-advance delay: {delay_ms} ms"
+                f"Config reloaded.<br>Auto-advance delay: {delay_ms} ms"
             )
 
     def refresh_layer_combo(self):
@@ -189,7 +320,13 @@ class CheckAKea:
 
         self.layer_combo.blockSignals(False)
 
+        self.clear_active_queue()
         self.refresh_display_field_combo()
+
+        if self.status_label:
+            self.status_label.setText(
+                "Choose a polygon layer, then start the queue."
+            )
 
     def refresh_display_field_combo(self):
         if self.layer_combo is None or self.display_field_combo is None:
@@ -278,15 +415,17 @@ class CheckAKea:
 
         if not self.layer:
             self.status_label.setText("No valid polygon layer selected.")
+            self.set_validation_controls_visible(False)
             return
 
         validation_field = self.config["validation_field"]
 
         if validation_field not in [field.name() for field in self.layer.fields()]:
             self.status_label.setText(
-                f"Field '{validation_field}' does not exist in this layer.\n"
+                f"Field '{escape(validation_field)}' does not exist in this layer.<br>"
                 f"Add it as a Text/String field first."
             )
+            self.set_validation_controls_visible(False)
             return
 
         if not self.layer.isEditable():
@@ -298,8 +437,12 @@ class CheckAKea:
         if not self.feature_ids:
             self.status_label.setText("No polygons found for validation.")
             self.clear_highlight()
+            self.clear_comment_box()
+            self.set_validation_controls_visible(False)
             return
 
+        self.refresh_display_field_combo()
+        self.set_validation_controls_visible(True)
         self.show_current_feature()
 
     def get_validation_feature_ids(self):
@@ -331,9 +474,16 @@ class CheckAKea:
         self.layer.selectByIds([fid])
         self.zoom_to_feature(feature)
         self.highlight_feature(feature)
+        self.load_comment_for_feature(feature)
 
         validation_field = self.config["validation_field"]
         current_value = feature[validation_field]
+
+        comment_field = self.config.get("comment_field", "comment")
+        if self.layer.fields().indexOf(comment_field) == -1:
+            comment_status = f"missing field: {comment_field}"
+        else:
+            comment_status = comment_field
 
         display_field = self.get_display_field()
         display_text = "Select an attribute to display."
@@ -350,7 +500,10 @@ class CheckAKea:
             if len(display_value_text) > max_chars:
                 display_value_text = display_value_text[:max_chars] + "..."
 
-            display_text = f"{display_field}: {display_value_text}"
+            display_text = (
+                f"<b>{escape(display_field)}: "
+                f"{escape(display_value_text)}</b>"
+            )
 
         shortcut_text = "\n".join(
             f"{key} = {value}"
@@ -360,18 +513,104 @@ class CheckAKea:
         delay_ms = self.config.get("auto_advance_delay_ms", 100)
 
         self.status_label.setText(
-            f"Polygon {self.index + 1} of {len(self.feature_ids)}\n"
-            f"FID: {fid}\n"
-            f"{validation_field}: {current_value}\n\n"
-            f"Display attribute:\n"
-            f"{display_text}\n\n"
-            f"Navigation:\n"
-            f"◀ Left Arrow = Previous\n"
-            f"Right Arrow = Next ▶\n\n"
-            f"Validation shortcuts:\n"
-            f"{shortcut_text}\n\n"
+            f"Polygon {self.index + 1} of {len(self.feature_ids)}<br>"
+            f"FID: {fid}<br>"
+            f"<b>{escape(validation_field)}: {escape(str(current_value))}</b><br>"
+            f"Comment field: {escape(comment_status)}<br><br>"
+            f"Display attribute:<br>"
+            f"{display_text}<br><br>"
+            f"Navigation:<br>"
+            f"◀ Left Arrow = Previous<br>"
+            f"Right Arrow = Next ▶<br><br>"
+            f"Validation shortcuts:<br>"
+            f"{escape(shortcut_text).replace(chr(10), '<br>')}<br><br>"
             f"Auto-advance delay: {delay_ms} ms"
         )
+
+    def load_comment_for_feature(self, feature):
+        if self.comment_box is None:
+            return
+
+        comment_field = self.config.get("comment_field", "comment")
+        field_index = self.layer.fields().indexOf(comment_field)
+
+        self.comment_box.blockSignals(True)
+
+        if field_index == -1:
+            self.comment_box.setPlainText("")
+            self.comment_box.setEnabled(False)
+            if self.save_comment_button:
+                self.save_comment_button.setEnabled(False)
+            self.comment_box.setPlaceholderText(
+                f"Comment field '{comment_field}' does not exist."
+            )
+        else:
+            comment_value = feature[comment_field]
+            self.comment_box.setPlainText(
+                "" if comment_value is None else str(comment_value)
+            )
+            self.comment_box.setEnabled(True)
+            if self.save_comment_button:
+                self.save_comment_button.setEnabled(True)
+            self.comment_box.setPlaceholderText(
+                "Write an optional comment for this polygon..."
+            )
+
+        self.comment_box.blockSignals(False)
+
+    def clear_comment_box(self):
+        if self.comment_box is None:
+            return
+
+        self.comment_box.blockSignals(True)
+        self.comment_box.setPlainText("")
+        self.comment_box.blockSignals(False)
+
+    def save_comment_for_current_feature(self, silent=True):
+        if not self.layer or not self.feature_ids or self.index < 0:
+            return False
+
+        if self.comment_box is None:
+            return False
+
+        comment_field = self.config.get("comment_field", "comment")
+        field_index = self.layer.fields().indexOf(comment_field)
+
+        if field_index == -1:
+            if not silent and self.status_label:
+                self.status_label.setText(
+                    f"Comment field '{escape(comment_field)}' does not exist."
+                )
+            return False
+
+        fid = self.feature_ids[self.index]
+        comment_text = self.comment_box.toPlainText()
+
+        if not self.layer.isEditable():
+            self.layer.startEditing()
+
+        success = self.layer.changeAttributeValue(
+            fid,
+            field_index,
+            comment_text
+        )
+
+        if not success:
+            if not silent and self.status_label:
+                self.status_label.setText(
+                    f"Could not save comment for feature {fid}."
+                )
+            return False
+
+        if not silent:
+            self.iface.messageBar().pushSuccess(
+                "Check-a-Kea",
+                f"Saved comment for feature {fid}."
+            )
+
+            self.show_current_feature()
+
+        return True
 
     def zoom_to_feature(self, feature):
         geom = feature.geometry()
@@ -422,7 +661,7 @@ class CheckAKea:
 
         if field_index == -1:
             self.status_label.setText(
-                f"Field '{validation_field}' does not exist."
+                f"Field '{escape(validation_field)}' does not exist."
             )
             return
 
@@ -437,9 +676,11 @@ class CheckAKea:
 
         if not success:
             self.status_label.setText(
-                f"Could not write '{validation_value}' to feature {fid}."
+                f"Could not write '{escape(validation_value)}' to feature {fid}."
             )
             return
+
+        self.save_comment_for_current_feature(silent=True)
 
         if self.config.get("auto_advance", True):
             delay_ms = self.config.get("auto_advance_delay_ms", 100)
@@ -449,12 +690,12 @@ class CheckAKea:
             extra_display = ""
 
             if display_field:
-                extra_display = f"\nDisplay field: {display_field}"
+                extra_display = f"<br>Display field: {escape(display_field)}"
 
             self.status_label.setText(
-                f"Set {validation_field} = {validation_value}\n"
+                f"Set {escape(validation_field)} = {escape(validation_value)}<br>"
                 f"FID: {fid}"
-                f"{extra_display}\n"
+                f"{extra_display}<br>"
                 f"Advancing in {delay_ms} ms..."
             )
 
@@ -473,12 +714,16 @@ class CheckAKea:
         if not self.feature_ids:
             return
 
+        self.save_comment_for_current_feature(silent=True)
+
         if self.index < len(self.feature_ids) - 1:
             self.index += 1
             self.show_current_feature()
         else:
             self.status_label.setText("Finished validation queue.")
             self.clear_highlight()
+            self.clear_comment_box()
+            self.set_validation_controls_visible(False)
 
     def previous_feature(self):
         if self.waiting_to_advance:
@@ -486,6 +731,8 @@ class CheckAKea:
 
         if not self.feature_ids:
             return
+
+        self.save_comment_for_current_feature(silent=True)
 
         if self.index > 0:
             self.index -= 1

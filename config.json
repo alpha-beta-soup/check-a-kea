@@ -1,5 +1,6 @@
 {
   "validation_field": "validation",
+  "comment_field": "comment",
   "unvalidated_filter": "validation IS NULL OR validation = ''",
   "zoom_buffer_percent": 30,
   "auto_advance": true,
