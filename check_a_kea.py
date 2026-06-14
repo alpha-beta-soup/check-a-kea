@@ -17,6 +17,10 @@ from qgis.PyQt.QtWidgets import (
     QPlainTextEdit,
     QDialogButtonBox,
     QMessageBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
 )
 from qgis.PyQt.QtGui import QKeySequence, QIcon
 from qgis.PyQt.QtCore import Qt, QTimer
@@ -70,6 +74,67 @@ class JsonConfigDialog(QDialog):
         super().accept()
 
 
+class AttributeTableDialog(QDialog):
+    def __init__(self, layer, feature, parent=None):
+        super().__init__(parent)
+
+        self.layer = None
+        self.feature = None
+
+        self.setWindowTitle("Check-a-Kea attributes")
+        self.resize(650, 520)
+
+        layout = QVBoxLayout(self)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Attribute", "Value"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+
+        self.table.horizontalHeader().setSectionResizeMode(
+            0,
+            QHeaderView.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            1,
+            QHeaderView.Stretch
+        )
+
+        layout.addWidget(self.table)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(self.reject)
+        close_button = button_box.button(QDialogButtonBox.Close)
+        if close_button:
+            close_button.clicked.connect(self.close)
+
+        layout.addWidget(button_box)
+
+        self.update_feature(layer, feature)
+
+    def update_feature(self, layer, feature):
+        self.layer = layer
+        self.feature = feature
+
+        self.setWindowTitle(f"Check-a-Kea attributes - FID {feature.id()}")
+
+        self.table.setRowCount(len(layer.fields()))
+
+        for row, field in enumerate(layer.fields()):
+            field_name = field.name()
+            value = feature[field_name]
+
+            field_item = QTableWidgetItem(field_name)
+            value_item = QTableWidgetItem("" if value is None else str(value))
+
+            self.table.setItem(row, 0, field_item)
+            self.table.setItem(row, 1, value_item)
+
+        self.table.resizeRowsToContents()
+
+
 class CheckAKea:
     def __init__(self, iface):
         self.iface = iface
@@ -86,6 +151,8 @@ class CheckAKea:
         self.comment_controls_widget = None
         self.comment_box = None
         self.save_comment_button = None
+
+        self.attributes_dialog = None
 
         self.layer = None
         self.feature_ids = []
@@ -139,6 +206,10 @@ class CheckAKea:
             self.iface.removeToolBarIcon(self.action)
 
         self.clear_shortcuts()
+
+        if self.attributes_dialog:
+            self.attributes_dialog.close()
+            self.attributes_dialog = None
 
         if self.dock:
             self.iface.removeDockWidget(self.dock)
@@ -213,9 +284,16 @@ class CheckAKea:
         nav_layout.addWidget(previous_button)
         nav_layout.addWidget(next_button)
 
+        show_attributes_button = QPushButton("Show attributes")
+        show_attributes_button.clicked.connect(self.open_attributes_dialog)
+        show_attributes_button.setToolTip(
+            "Open a table showing all attributes for the current polygon."
+        )
+
         validation_layout.addWidget(QLabel("Attribute to display"))
         validation_layout.addWidget(self.display_field_combo)
         validation_layout.addLayout(nav_layout)
+        validation_layout.addWidget(show_attributes_button)
 
         self.comment_controls_widget = QWidget()
         comment_layout = QVBoxLayout(self.comment_controls_widget)
@@ -265,6 +343,9 @@ class CheckAKea:
         self.clear_highlight()
         self.clear_comment_box()
         self.set_validation_controls_visible(False)
+
+        if self.attributes_dialog and self.attributes_dialog.isVisible():
+            self.attributes_dialog.close()
 
     def layer_selection_changed(self):
         self.clear_active_queue()
@@ -475,6 +556,7 @@ class CheckAKea:
         self.zoom_to_feature(feature)
         self.highlight_feature(feature)
         self.load_comment_for_feature(feature)
+        self.refresh_attributes_dialog(feature)
 
         validation_field = self.config["validation_field"]
         current_value = feature[validation_field]
@@ -526,6 +608,44 @@ class CheckAKea:
             f"{escape(shortcut_text).replace(chr(10), '<br>')}<br><br>"
             f"Auto-advance delay: {delay_ms} ms"
         )
+
+    def open_attributes_dialog(self):
+        if not self.layer or not self.feature_ids or self.index < 0:
+            return
+
+        fid = self.feature_ids[self.index]
+        request = QgsFeatureRequest(fid)
+        feature = next(self.layer.getFeatures(request), None)
+
+        if feature is None:
+            if self.status_label:
+                self.status_label.setText("Could not load feature attributes.")
+            return
+
+        if self.attributes_dialog is None or not self.attributes_dialog.isVisible():
+            self.attributes_dialog = AttributeTableDialog(
+                self.layer,
+                feature,
+                self.iface.mainWindow()
+            )
+            self.attributes_dialog.show()
+        else:
+            self.attributes_dialog.update_feature(self.layer, feature)
+
+        self.attributes_dialog.raise_()
+        self.attributes_dialog.activateWindow()
+
+    def refresh_attributes_dialog(self, feature):
+        if self.attributes_dialog is None:
+            return
+
+        if not self.attributes_dialog.isVisible():
+            return
+
+        if not self.layer:
+            return
+
+        self.attributes_dialog.update_feature(self.layer, feature)
 
     def load_comment_for_feature(self, feature):
         if self.comment_box is None:
