@@ -1,0 +1,7 @@
+KEY_VALIDATION_FIELD = "validation_field"
+KEY_COMMENT_FIELD = "comment_field"
+KEY_UNVALIDATED_FILTER = "unvalidated_filter"
+KEY_ZOOM_BUFFER = "zoom_buffer_percent"
+KEY_AUTO_ADVANCE = "auto_advance"
+KEY_AUTO_ADVANCE_DELAY = "auto_advance_delay_ms"
+KEY_SHORTCUTS = "shortcuts"
