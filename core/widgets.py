@@ -340,7 +340,7 @@ class ConfigDialog(QDialog):
         if self._comment_warning:
             self._comment_warning.setVisible(not c_found and bool(current_comment))
 
-        self._populate_display_fields_combo([])  # reset on layer change
+        self._populate_display_fields_combo(self._display_fields_combo.checked_items())
         self._update_layer_warning()
         self._rebuild_shortcut_value_widgets()
         self._update_save_button()
