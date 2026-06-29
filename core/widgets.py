@@ -1,5 +1,6 @@
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -15,6 +16,7 @@ from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStyle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -25,7 +27,7 @@ from qgis.PyQt.QtWidgets import (
 from qgis.PyQt.QtGui import QBrush, QColor, QStandardItem
 from qgis.PyQt.QtCore import Qt, QDate, QEvent, QObject, QVariant
 
-from qgis.core import QgsExpression, QgsField, QgsLayerTree, QgsProject, QgsVectorLayer
+from qgis.core import QgsExpression, QgsField, QgsIconUtils, QgsLayerTree, QgsProject, QgsVectorDataProvider, QgsVectorLayer
 from qgis.gui import QgsExpressionBuilderDialog
 
 from .shortcuts import shortcut_conflicts
@@ -227,22 +229,66 @@ class ConfigDialog(QDialog):
 
     def _build_layer_combo(self):
         combo = QComboBox()
+        combo.setEditable(True)
+        combo.lineEdit().setReadOnly(True)
         self._populate_layer_combo(combo)
         combo.currentIndexChanged.connect(self._on_layer_changed)
+        combo.currentIndexChanged.connect(lambda: self._update_layer_combo_display(combo))
+        self._update_layer_combo_display(combo)
         return combo
+
+    def _update_layer_combo_display(self, combo):
+        idx = combo.currentIndex()
+        if idx >= 0:
+            name = combo.itemData(idx, Qt.UserRole + 1)
+            if name:
+                combo.lineEdit().setText(name)
 
     def _populate_layer_combo(self, combo):
         combo.blockSignals(True)
         combo.clear()
+        model = combo.model()
+        folder_icon = QApplication.style().standardIcon(QStyle.SP_DirIcon)
 
-        def add_layers(node):
-            for child in node.children():
+        def add_layers(node, prefix=""):
+            valid = [
+                c for c in node.children()
+                if QgsLayerTree.isGroup(c)
+                or (QgsLayerTree.isLayer(c) and c.layer() is not None)
+            ]
+            for i, child in enumerate(valid):
+                is_last = i == len(valid) - 1
+                if not prefix:
+                    connector = ""
+                    child_prefix = "  "
+                else:
+                    connector = "└─ " if is_last else "├─ "
+                    child_prefix = prefix + ("   " if is_last else "│  ")
+
                 if QgsLayerTree.isGroup(child):
-                    add_layers(child)
-                elif QgsLayerTree.isLayer(child):
+                    combo.addItem(folder_icon, prefix + connector + child.name(), None)
+                    item = model.item(combo.count() - 1)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    item.setFlags(Qt.ItemIsEnabled)
+                    add_layers(child, child_prefix)
+                else:
                     layer = child.layer()
-                    if layer and isinstance(layer, QgsVectorLayer):
-                        combo.addItem(layer.name(), layer.id())
+                    is_vector = isinstance(layer, QgsVectorLayer)
+                    can_write = is_vector and bool(
+                        layer.dataProvider().capabilities()
+                        & QgsVectorDataProvider.ChangeAttributeValues
+                    )
+                    combo.addItem(
+                        QgsIconUtils.iconForLayer(layer),
+                        prefix + connector + layer.name(),
+                        layer.id(),
+                    )
+                    item = model.item(combo.count() - 1)
+                    item.setData(layer.name(), Qt.UserRole + 1)
+                    if not can_write:
+                        item.setFlags(Qt.NoItemFlags)
 
         add_layers(QgsProject.instance().layerTreeRoot())
 
@@ -258,6 +304,7 @@ class ConfigDialog(QDialog):
                 else:
                     label = tr("⚠ Saved layer not found")
                 combo.insertItem(0, label, saved_id)
+                combo.model().item(0).setData(label, Qt.UserRole + 1)
                 combo.setCurrentIndex(0)
 
         combo.blockSignals(False)
