@@ -1,7 +1,24 @@
+QGSPROJECT_SCOPE = "CheckAKea"
+QSETTINGS_GROUP = "CheckAKea"
+
+KEY_LAYER_ID = "layer_id"
 KEY_VALIDATION_FIELD = "validation_field"
 KEY_COMMENT_FIELD = "comment_field"
 KEY_UNVALIDATED_FILTER = "unvalidated_filter"
 KEY_ZOOM_BUFFER = "zoom_buffer_percent"
 KEY_AUTO_ADVANCE = "auto_advance"
 KEY_AUTO_ADVANCE_DELAY = "auto_advance_delay_ms"
+KEY_AUTO_IDENTIFY = "auto_identify"
 KEY_SHORTCUTS = "shortcuts"
+KEY_DISPLAY_FIELDS = "display_fields"
+
+DEFAULT_LAYER_ID = ""
+DEFAULT_VALIDATION_FIELD = "validation"
+DEFAULT_COMMENT_FIELD = "comment"
+DEFAULT_UNVALIDATED_FILTER = ""
+DEFAULT_ZOOM_BUFFER = 30
+DEFAULT_AUTO_ADVANCE = True
+DEFAULT_AUTO_ADVANCE_DELAY = 100
+DEFAULT_AUTO_IDENTIFY = False
+DEFAULT_SHORTCUTS = {"1": "true", "2": "false", "3": "maybe"}
+DEFAULT_DISPLAY_FIELDS = []
