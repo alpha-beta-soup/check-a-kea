@@ -9,6 +9,8 @@ KEY_ZOOM_BUFFER = "zoom_buffer_percent"
 KEY_AUTO_ADVANCE = "auto_advance"
 KEY_AUTO_ADVANCE_DELAY = "auto_advance_delay_ms"
 KEY_AUTO_IDENTIFY = "auto_identify"
+KEY_FLASH_CHANGES = "flash_changes"
+KEY_FLASH_CHANGES_DELAY = "flash_changes_delay_ms"
 KEY_SHORTCUTS = "shortcuts"
 KEY_DISPLAY_FIELDS = "display_fields"
 
@@ -20,5 +22,7 @@ DEFAULT_ZOOM_BUFFER = 30
 DEFAULT_AUTO_ADVANCE = True
 DEFAULT_AUTO_ADVANCE_DELAY = 100
 DEFAULT_AUTO_IDENTIFY = False
+DEFAULT_FLASH_CHANGES = True
+DEFAULT_FLASH_CHANGES_DELAY = 4000
 DEFAULT_SHORTCUTS = {"1": "true", "2": "false", "3": "maybe"}
 DEFAULT_DISPLAY_FIELDS = []

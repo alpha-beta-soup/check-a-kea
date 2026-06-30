@@ -36,6 +36,8 @@ from .constants import (
     DEFAULT_AUTO_ADVANCE_DELAY,
     DEFAULT_AUTO_IDENTIFY,
     DEFAULT_COMMENT_FIELD,
+    DEFAULT_FLASH_CHANGES,
+    DEFAULT_FLASH_CHANGES_DELAY,
     DEFAULT_DISPLAY_FIELDS,
     DEFAULT_LAYER_ID,
     DEFAULT_SHORTCUTS,
@@ -46,6 +48,8 @@ from .constants import (
     KEY_AUTO_ADVANCE_DELAY,
     KEY_AUTO_IDENTIFY,
     KEY_COMMENT_FIELD,
+    KEY_FLASH_CHANGES,
+    KEY_FLASH_CHANGES_DELAY,
     KEY_DISPLAY_FIELDS,
     KEY_LAYER_ID,
     KEY_SHORTCUTS,
@@ -855,10 +859,30 @@ class ConfigDialog(QDialog):
             tr("Open QGIS Identify Results for the current feature as you navigate.")
         )
 
+        self._flash_changes = QCheckBox()
+        self._flash_changes.setChecked(
+            self.config.get(KEY_FLASH_CHANGES, DEFAULT_FLASH_CHANGES)
+        )
+        self._flash_changes.setToolTip(
+            tr("Highlight attribute rows whose value differs from the previous feature.")
+        )
+
+        self._flash_changes_delay = QSpinBox()
+        self._flash_changes_delay.setRange(0, 30000)
+        self._flash_changes_delay.setSuffix(" ms")
+        self._flash_changes_delay.setValue(
+            self.config.get(KEY_FLASH_CHANGES_DELAY, DEFAULT_FLASH_CHANGES_DELAY)
+        )
+        self._flash_changes_delay.setToolTip(
+            tr("How long the changed-value highlight remains visible.")
+        )
+
         layout.addRow(tr("Zoom buffer"), self._zoom_buffer)
         layout.addRow(tr("Auto-advance"), self._auto_advance)
         layout.addRow(tr("Auto-advance delay"), self._advance_delay)
         layout.addRow(tr("Auto-identify"), self._auto_identify)
+        layout.addRow(tr("Flash changes"), self._flash_changes)
+        layout.addRow(tr("Flash duration"), self._flash_changes_delay)
 
         return widget
 
@@ -887,4 +911,6 @@ class ConfigDialog(QDialog):
         self.config[KEY_AUTO_ADVANCE] = self._auto_advance.isChecked()
         self.config[KEY_AUTO_ADVANCE_DELAY] = self._advance_delay.value()
         self.config[KEY_AUTO_IDENTIFY] = self._auto_identify.isChecked()
+        self.config[KEY_FLASH_CHANGES] = self._flash_changes.isChecked()
+        self.config[KEY_FLASH_CHANGES_DELAY] = self._flash_changes_delay.value()
         super().accept()

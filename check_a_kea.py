@@ -10,7 +10,7 @@ from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QTableWidgetItem,
 )
-from qgis.PyQt.QtGui import QFont, QFontDatabase, QIcon, QKeySequence, QMouseEvent
+from qgis.PyQt.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QKeySequence, QMouseEvent
 from qgis.PyQt.QtCore import Qt, QSettings, QTimer, QEvent, QPoint, QCoreApplication
 
 import sip  # type: ignore  # QGIS runtime dependency, not resolvable by static analysers
@@ -24,6 +24,8 @@ from .core.constants import (
     DEFAULT_AUTO_ADVANCE_DELAY,
     DEFAULT_AUTO_IDENTIFY,
     DEFAULT_COMMENT_FIELD,
+    DEFAULT_FLASH_CHANGES,
+    DEFAULT_FLASH_CHANGES_DELAY,
     DEFAULT_DISPLAY_FIELDS,
     DEFAULT_LAYER_ID,
     DEFAULT_SHORTCUTS,
@@ -34,6 +36,8 @@ from .core.constants import (
     KEY_AUTO_ADVANCE_DELAY,
     KEY_AUTO_IDENTIFY,
     KEY_COMMENT_FIELD,
+    KEY_FLASH_CHANGES,
+    KEY_FLASH_CHANGES_DELAY,
     KEY_DISPLAY_FIELDS,
     KEY_LAYER_ID,
     KEY_SHORTCUTS,
@@ -76,6 +80,8 @@ class CheckAKea(DockMixin):
         self.highlight = None
         self.shortcuts = []
         self._focus_guard = None
+        self._last_feature_values = {}
+        self._flash_generation = 0
 
         self.plugin_dir = Path(__file__).parent
         self.config = self.load_config()
@@ -126,6 +132,12 @@ class CheckAKea(DockMixin):
             KEY_AUTO_IDENTIFY: settings.value(
                 f"{qs}/{KEY_AUTO_IDENTIFY}", DEFAULT_AUTO_IDENTIFY, type=bool
             ),
+            KEY_FLASH_CHANGES: settings.value(
+                f"{qs}/{KEY_FLASH_CHANGES}", DEFAULT_FLASH_CHANGES, type=bool
+            ),
+            KEY_FLASH_CHANGES_DELAY: settings.value(
+                f"{qs}/{KEY_FLASH_CHANGES_DELAY}", DEFAULT_FLASH_CHANGES_DELAY, type=int
+            ),
         }
 
     def save_config(self):
@@ -155,6 +167,14 @@ class CheckAKea(DockMixin):
         settings.setValue(
             f"{qs}/{KEY_AUTO_IDENTIFY}",
             self.config.get(KEY_AUTO_IDENTIFY, DEFAULT_AUTO_IDENTIFY),
+        )
+        settings.setValue(
+            f"{qs}/{KEY_FLASH_CHANGES}",
+            self.config.get(KEY_FLASH_CHANGES, DEFAULT_FLASH_CHANGES),
+        )
+        settings.setValue(
+            f"{qs}/{KEY_FLASH_CHANGES_DELAY}",
+            self.config.get(KEY_FLASH_CHANGES_DELAY, DEFAULT_FLASH_CHANGES_DELAY),
         )
 
     def _load_translator(self):
@@ -257,15 +277,48 @@ class CheckAKea(DockMixin):
         if not fields_to_show:
             return
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        flash_color = QColor("#fff9c4")
+
+        self._flash_generation += 1
+        gen = self._flash_generation
+        changed_rows = []
+
         self.attribute_table.setRowCount(len(fields_to_show))
+        new_values = {}
         for row, field in enumerate(fields_to_show):
             value = feature[field.name()]
             value_str = "" if (value is None or value == QGIS_NULL) else str(value)
-            self.attribute_table.setItem(row, 0, QTableWidgetItem(field.name()))
+            new_values[field.name()] = value_str
+
+            name_item = QTableWidgetItem(field.name())
             value_item = QTableWidgetItem(value_str)
             value_item.setFont(mono)
+
+            if (
+                field.name() in self._last_feature_values
+                and value_str != self._last_feature_values[field.name()]
+            ):
+                name_item.setBackground(flash_color)
+                value_item.setBackground(flash_color)
+                changed_rows.append(row)
+
+            self.attribute_table.setItem(row, 0, name_item)
             self.attribute_table.setItem(row, 1, value_item)
+
+        self._last_feature_values = new_values
         self.attribute_table.resizeRowsToContents()
+
+        if changed_rows and self.config.get(KEY_FLASH_CHANGES, DEFAULT_FLASH_CHANGES):
+            delay = self.config.get(KEY_FLASH_CHANGES_DELAY, DEFAULT_FLASH_CHANGES_DELAY)
+            def clear_flash(g=gen):
+                if self._flash_generation != g:
+                    return
+                for r in changed_rows:
+                    for col in range(2):
+                        item = self.attribute_table.item(r, col)
+                        if item:
+                            item.setBackground(QBrush())
+            QTimer.singleShot(delay, clear_flash)
 
     # ------------------------------------------------------------------ shortcuts
 
@@ -319,6 +372,8 @@ class CheckAKea(DockMixin):
     def clear_active_queue(self):
         self._disconnect_selection_signal()
         self.session = None
+        self._last_feature_values = {}
+        self._flash_generation += 1
         self.clear_highlight()
         self.clear_comment_box()
         self.set_validation_controls_visible(False)
