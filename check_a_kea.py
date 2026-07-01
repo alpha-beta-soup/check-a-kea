@@ -87,6 +87,9 @@ class CheckAKea(DockMixin):
         self._last_feature_values = {}
         self._flash_generation = 0
         self._showing_feature = False
+        self._cached_nav_order = None
+        self._attr_table_view = None
+        self._attr_table_model = None
 
         self.plugin_dir = Path(__file__).parent
         self.config = self.load_config()
@@ -392,7 +395,9 @@ class CheckAKea(DockMixin):
 
     def clear_active_queue(self):
         self._disconnect_layer_signals()
+        self._release_attr_table_cache()
         self.session = None
+        self._cached_nav_order = None
         self._last_feature_values = {}
         self._flash_generation += 1
         self._update_edit_buttons()
@@ -438,6 +443,7 @@ class CheckAKea(DockMixin):
             return
 
         self.session = ValidationSession(layer, feature_ids)
+        self._get_nav_order()  # prime cache from attribute table if already open
         self._connect_layer_signals()
         self.set_validation_controls_visible(True)
         self._update_comment_visibility()
@@ -485,7 +491,7 @@ class CheckAKea(DockMixin):
         field_is_null = current_value is None or current_value == QGIS_NULL
         active_value = None if field_is_null else str(current_value)
 
-        attr_fids = self._get_ordered_fids_from_attr_table()
+        attr_fids = self._get_nav_order()
         if attr_fids is not None:
             session_set = set(self.session.feature_ids)
             ordered = [f for f in attr_fids if f in session_set]
@@ -517,9 +523,21 @@ class CheckAKea(DockMixin):
         )
 
     def _find_attr_table_view(self):
-        """Return (view_widget, QgsAttributeTableFilterModel) for the open attribute table, or (None, None)."""
+        """Return cached (view_widget, QgsAttributeTableFilterModel), scanning only when needed."""
         if not self.session:
             return None, None
+        # Validate cached reference
+        if self._attr_table_view is not None:
+            try:
+                if (not sip.isdeleted(self._attr_table_view)
+                        and not sip.isdeleted(self._attr_table_model)
+                        and self._attr_table_model.layer().id() == self.session.layer.id()):
+                    return self._attr_table_view, self._attr_table_model
+            except Exception:
+                pass
+            self._release_attr_table_cache()
+
+        # Full scan — only runs when cache is cold or stale
         for widget in QApplication.instance().allWidgets():
             if not hasattr(widget, "model") or not hasattr(widget, "scrollTo"):
                 continue
@@ -534,10 +552,16 @@ class CheckAKea(DockMixin):
                 )
                 if model.layer().id() != self.session.layer.id():
                     continue
+                self._attr_table_view = widget
+                self._attr_table_model = model
                 return widget, model
             except Exception:
                 pass
         return None, None
+
+    def _release_attr_table_cache(self):
+        self._attr_table_view = None
+        self._attr_table_model = None
 
     def _scroll_attribute_table_to_selection(self):
         if not self.session:
@@ -758,28 +782,33 @@ class CheckAKea(DockMixin):
             self.session.waiting_to_advance = False
         self.next_feature()
 
-    def _get_ordered_fids_from_attr_table(self):
-        """Return FIDs in the order currently shown in the open attribute table, or None."""
+    def _get_nav_order(self):
+        """Return ordered FIDs for navigation. Reads from the attribute table model when open
+        (using the cached widget reference), persists last known order when closed."""
+        if not self.session:
+            return None
         _, model = self._find_attr_table_view()
-        if model is None:
-            return None
-        try:
-            master = sip.wrapinstance(
-                sip.unwrapinstance(model.masterModel()), QgsAttributeTableModel
-            )
-            return [
-                master.rowToId(model.mapToSource(model.index(row, 0)).row())
-                for row in range(model.rowCount())
-            ]
-        except Exception:
-            return None
+        if model is not None:
+            try:
+                master = sip.wrapinstance(
+                    sip.unwrapinstance(model.masterModel()), QgsAttributeTableModel
+                )
+                session_set = set(self.session.feature_ids)
+                self._cached_nav_order = [
+                    master.rowToId(model.mapToSource(model.index(row, 0)).row())
+                    for row in range(model.rowCount())
+                    if master.rowToId(model.mapToSource(model.index(row, 0)).row()) in session_set
+                ]
+            except Exception:
+                pass
+        return self._cached_nav_order
 
     def _navigate(self, delta):
         if not self.session or self.session.waiting_to_advance:
             return
         self.save_comment_for_current_feature()
 
-        attr_fids = self._get_ordered_fids_from_attr_table()
+        attr_fids = self._get_nav_order()
         if attr_fids is not None:
             session_set = set(self.session.feature_ids)
             ordered = [f for f in attr_fids if f in session_set]
