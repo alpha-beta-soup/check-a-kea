@@ -90,6 +90,8 @@ class CheckAKea(DockMixin):
         self._cached_nav_order = None
         self._attr_table_view = None
         self._attr_table_model = None
+        self._sort_update_timer = None
+        self._cached_sort_state = None
 
         self.plugin_dir = Path(__file__).parent
         self.config = self.load_config()
@@ -491,20 +493,28 @@ class CheckAKea(DockMixin):
         field_is_null = current_value is None or current_value == QGIS_NULL
         active_value = None if field_is_null else str(current_value)
 
-        attr_fids = self._get_nav_order()
-        if attr_fids is not None:
-            session_set = set(self.session.feature_ids)
-            ordered = [f for f in attr_fids if f in session_set]
+        self._get_nav_order()
+        self._refresh_position_display(fid)
+        self.status_label.setText(
+            f"<h4 style='margin: 4px 0;'>{tr('Keyboard shortcuts')}</h4>"
+            f"{kbd_table(list(self.config[KEY_SHORTCUTS].items()), active_value=active_value, null_active=field_is_null)}"
+        )
+
+    def _refresh_position_display(self, fid):
+        """Update footer label and nav button states for fid against the cached nav order."""
+        if not self.session:
+            return
+        nav_order = self._cached_nav_order
+        if nav_order is not None:
             try:
-                display_pos = ordered.index(fid) + 1
-                display_total = len(ordered)
+                display_pos = nav_order.index(fid) + 1
+                display_total = len(nav_order)
             except ValueError:
                 display_pos = self.session.index + 1
                 display_total = len(self.session)
         else:
             display_pos = self.session.index + 1
             display_total = len(self.session)
-
         at_end = display_pos == display_total
         if self.prev_button:
             self.prev_button.setEnabled(display_pos > 1)
@@ -517,10 +527,28 @@ class CheckAKea(DockMixin):
             f'<td align="right">FID: {fid}</td>'
             f"</tr></table>"
         )
-        self.status_label.setText(
-            f"<h4 style='margin: 4px 0;'>{tr('Keyboard shortcuts')}</h4>"
-            f"{kbd_table(list(self.config[KEY_SHORTCUTS].items()), active_value=active_value, null_active=field_is_null)}"
-        )
+
+    def _on_attr_table_sort_changed(self, col, order):
+        """Slot: fires when the attribute table sort column/order changes.
+        Guards against spurious fires with the same state to avoid extra O(n) rebuilds."""
+        new_state = (col, order)
+        if new_state == self._cached_sort_state:
+            return
+        self._cached_sort_state = new_state
+        if self._sort_update_timer is None:
+            self._sort_update_timer = QTimer()
+            self._sort_update_timer.setSingleShot(True)
+            self._sort_update_timer.setInterval(100)
+            self._sort_update_timer.timeout.connect(self._do_sort_update)
+        self._sort_update_timer.start()
+
+    def _do_sort_update(self):
+        if not self.session or self._showing_feature:
+            return
+        self._cached_nav_order = None
+        self._get_nav_order()
+        if self.session:
+            self._refresh_position_display(self.session.current_fid)
 
     def _find_attr_table_view(self):
         """Return cached (view_widget, QgsAttributeTableFilterModel), scanning only when needed."""
@@ -554,14 +582,29 @@ class CheckAKea(DockMixin):
                     continue
                 self._attr_table_view = widget
                 self._attr_table_model = model
+                header = widget.horizontalHeader()
+                self._cached_sort_state = (
+                    header.sortIndicatorSection(),
+                    header.sortIndicatorOrder(),
+                )
+                header.sortIndicatorChanged.connect(self._on_attr_table_sort_changed)
                 return widget, model
             except Exception:
                 pass
         return None, None
 
     def _release_attr_table_cache(self):
+        if self._attr_table_view is not None:
+            try:
+                if not sip.isdeleted(self._attr_table_view):
+                    self._attr_table_view.horizontalHeader().sortIndicatorChanged.disconnect(
+                        self._on_attr_table_sort_changed
+                    )
+            except Exception:
+                pass
         self._attr_table_view = None
         self._attr_table_model = None
+        self._cached_sort_state = None
 
     def _scroll_attribute_table_to_selection(self):
         if not self.session:
