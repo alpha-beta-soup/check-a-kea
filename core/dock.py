@@ -110,17 +110,17 @@ class DockMixin:
         return widget
 
     def _build_nav_section(self):
-        prev_button = QPushButton(tr("◀ Previous"))
-        prev_button.clicked.connect(self.previous_feature)
-        prev_button.setToolTip(tr("Go to previous feature, Left Arrow"))
+        self.prev_button = QPushButton(tr("◀ Previous"))
+        self.prev_button.clicked.connect(self.previous_feature)
+        self.prev_button.setToolTip(tr("Go to previous feature, Left Arrow"))
 
-        next_button = QPushButton(tr("Next ▶"))
-        next_button.clicked.connect(self.next_feature)
-        next_button.setToolTip(tr("Go to next feature, Right Arrow"))
+        self.next_button = QPushButton(tr("Next ▶"))
+        self.next_button.clicked.connect(self.next_feature)
+        self.next_button.setToolTip(tr("Go to next feature, Right Arrow"))
 
         layout = QHBoxLayout()
-        layout.addWidget(prev_button)
-        layout.addWidget(next_button)
+        layout.addWidget(self.prev_button)
+        layout.addWidget(self.next_button)
         return layout
 
     def _build_edit_section(self):

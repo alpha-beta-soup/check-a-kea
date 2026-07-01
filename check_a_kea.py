@@ -80,6 +80,8 @@ class CheckAKea(DockMixin):
         self.highlight = None
         self.shortcuts = []
         self._focus_guard = None
+        self.prev_button = None
+        self.next_button = None
         self.save_edits_button = None
         self.discard_edits_button = None
         self._last_feature_values = {}
@@ -497,9 +499,15 @@ class CheckAKea(DockMixin):
             display_pos = self.session.index + 1
             display_total = len(self.session)
 
+        at_end = display_pos == display_total
+        if self.prev_button:
+            self.prev_button.setEnabled(display_pos > 1)
+        if self.next_button:
+            self.next_button.setEnabled(not at_end)
+        end_msg = f"<br><small>{tr('End of queue. Save edits when done.')}</small>" if at_end else ""
         self.footer_label.setText(
             f'<table width="100%"><tr>'
-            f'<td>{tr("Feature {} of {}").format(display_pos, display_total)}</td>'
+            f'<td>{tr("Feature {} of {}").format(display_pos, display_total)}{end_msg}</td>'
             f'<td align="right">FID: {fid}</td>'
             f"</tr></table>"
         )
@@ -784,16 +792,10 @@ class CheckAKea(DockMixin):
                 if 0 <= new_pos < len(ordered):
                     self.session.index = self.session.index_of(ordered[new_pos])
                     self.show_current_feature()
-                elif delta > 0:
-                    self.clear_active_queue()
-                    self.status_label.setText(tr("Finished validation queue."))
                 return
 
         if self.session.navigate(delta):
             self.show_current_feature()
-        elif delta > 0:
-            self.clear_active_queue()
-            self.status_label.setText(tr("Finished validation queue."))
 
     def next_feature(self):
         self._navigate(1)
