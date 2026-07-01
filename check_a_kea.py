@@ -80,8 +80,11 @@ class CheckAKea(DockMixin):
         self.highlight = None
         self.shortcuts = []
         self._focus_guard = None
+        self.save_edits_button = None
+        self.discard_edits_button = None
         self._last_feature_values = {}
         self._flash_generation = 0
+        self._showing_feature = False
 
         self.plugin_dir = Path(__file__).parent
         self.config = self.load_config()
@@ -240,13 +243,24 @@ class CheckAKea(DockMixin):
     # ------------------------------------------------------------------ config actions
 
     def open_config_dialog(self):
+        old_config = self.config
         dialog = ConfigDialog(self.config, parent=self.iface.mainWindow())
         if dialog.exec_() != QDialog.Accepted:
             return
+        old_auto_identify = old_config.get(KEY_AUTO_IDENTIFY, DEFAULT_AUTO_IDENTIFY)
         self.config = dialog.config
         self.save_config()
         self.register_shortcuts()
-        self.start_validation()
+
+        if old_auto_identify and not self.config.get(KEY_AUTO_IDENTIFY, DEFAULT_AUTO_IDENTIFY):
+            self.iface.actionPan().trigger()
+
+        queue_keys = (KEY_LAYER_ID, KEY_VALIDATION_FIELD, KEY_UNVALIDATED_FILTER)
+        if not self.session or any(self.config.get(k) != old_config.get(k) for k in queue_keys):
+            self.start_validation()
+        else:
+            self._update_comment_visibility()
+            self.refresh_attribute_table()
 
     def _on_project_changed(self, *_):
         self.clear_active_queue()
@@ -345,17 +359,22 @@ class CheckAKea(DockMixin):
 
     # ------------------------------------------------------------------ validation queue
 
-    def _connect_selection_signal(self):
+    def _connect_layer_signals(self):
         self.session.layer.selectionChanged.connect(self._on_layer_selection_changed)
+        self.session.layer.afterCommitChanges.connect(self._update_edit_buttons)
+        self.session.layer.afterRollBack.connect(self._update_edit_buttons)
 
-    def _disconnect_selection_signal(self):
+    def _disconnect_layer_signals(self):
         if self.session:
-            try:
-                self.session.layer.selectionChanged.disconnect(
-                    self._on_layer_selection_changed
-                )
-            except TypeError:
-                pass
+            for sig, slot in [
+                (self.session.layer.selectionChanged, self._on_layer_selection_changed),
+                (self.session.layer.afterCommitChanges, self._update_edit_buttons),
+                (self.session.layer.afterRollBack, self._update_edit_buttons),
+            ]:
+                try:
+                    sig.disconnect(slot)
+                except TypeError:
+                    pass
 
     def _on_layer_selection_changed(self, selected_ids, *_):
         if self._programmatic_selection or not self.session:
@@ -370,15 +389,18 @@ class CheckAKea(DockMixin):
         self.show_current_feature()
 
     def clear_active_queue(self):
-        self._disconnect_selection_signal()
+        self._disconnect_layer_signals()
         self.session = None
         self._last_feature_values = {}
         self._flash_generation += 1
+        self._update_edit_buttons()
         self.clear_highlight()
         self.clear_comment_box()
         self.set_validation_controls_visible(False)
 
     def start_validation(self):
+        self._disconnect_layer_signals()
+
         layer_id = self.config.get(KEY_LAYER_ID, "")
         layer = QgsProject.instance().mapLayer(layer_id) if layer_id else None
 
@@ -414,7 +436,7 @@ class CheckAKea(DockMixin):
             return
 
         self.session = ValidationSession(layer, feature_ids)
-        self._connect_selection_signal()
+        self._connect_layer_signals()
         self.set_validation_controls_visible(True)
         self._update_comment_visibility()
         self.show_current_feature()
@@ -428,8 +450,15 @@ class CheckAKea(DockMixin):
     # ------------------------------------------------------------------ feature display
 
     def show_current_feature(self):
-        if not self.session:
+        if not self.session or self._showing_feature:
             return
+        self._showing_feature = True
+        try:
+            self._show_current_feature_impl()
+        finally:
+            self._showing_feature = False
+
+    def _show_current_feature_impl(self):
         self.session.clamp_index()
         feature = self.session.current_feature()
         if feature is None:
@@ -447,6 +476,7 @@ class CheckAKea(DockMixin):
         if self.config.get(KEY_AUTO_IDENTIFY, DEFAULT_AUTO_IDENTIFY):
             self._auto_identify_feature(feature)
         self.refresh_attribute_table(feature)
+        self._update_edit_buttons()
 
         validation_field = self.config[KEY_VALIDATION_FIELD]
         current_value = feature[validation_field]
@@ -478,10 +508,10 @@ class CheckAKea(DockMixin):
             f"{kbd_table(list(self.config[KEY_SHORTCUTS].items()), active_value=active_value, null_active=field_is_null)}"
         )
 
-    def _scroll_attribute_table_to_selection(self):
+    def _find_attr_table_view(self):
+        """Return (view_widget, QgsAttributeTableFilterModel) for the open attribute table, or (None, None)."""
         if not self.session:
-            return
-        fid = self.session.current_fid
+            return None, None
         for widget in QApplication.instance().allWidgets():
             if not hasattr(widget, "model") or not hasattr(widget, "scrollTo"):
                 continue
@@ -496,11 +526,24 @@ class CheckAKea(DockMixin):
                 )
                 if model.layer().id() != self.session.layer.id():
                     continue
-                index = model.fidToIndex(fid)
-                if index.isValid():
-                    widget.scrollTo(index, QAbstractItemView.PositionAtCenter)
+                return widget, model
             except Exception:
                 pass
+        return None, None
+
+    def _scroll_attribute_table_to_selection(self):
+        if not self.session:
+            return
+        fid = self.session.current_fid
+        view, model = self._find_attr_table_view()
+        if view is None:
+            return
+        try:
+            index = model.fidToIndex(fid)
+            if index.isValid():
+                view.scrollTo(index, QAbstractItemView.PositionAtCenter)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ identify / comment visibility
 
@@ -510,6 +553,46 @@ class CheckAKea(DockMixin):
         self.comment_section_widget.setVisible(
             bool(self.config.get(KEY_COMMENT_FIELD, ""))
         )
+
+    def _update_edit_buttons(self):
+        modified = bool(self.session and self.session.layer.isModified())
+        if self.save_edits_button:
+            self.save_edits_button.setEnabled(modified)
+        if self.discard_edits_button:
+            self.discard_edits_button.setEnabled(modified)
+
+    def save_layer_edits(self):
+        if not self.session:
+            return
+        self.session.layer.commitChanges()
+        self.session.layer.startEditing()
+        self._update_edit_buttons()
+
+    def discard_layer_edits(self):
+        if not self.session:
+            return
+        layer = self.session.layer
+        rolled_back = []
+
+        def _on_before_rollback():
+            rolled_back.append(True)
+
+        layer.beforeRollBack.connect(_on_before_rollback)
+        self.iface.vectorLayerTools().stopEditing(layer, True)
+        try:
+            layer.beforeRollBack.disconnect(_on_before_rollback)
+        except TypeError:
+            pass
+        if not layer.isEditable():
+            layer.startEditing()
+            if rolled_back:
+                current_fid = self.session.current_fid if self.session else None
+                self.start_validation()
+                if self.session and current_fid is not None:
+                    idx = self.session.index_of(current_fid)
+                    if idx is not None:
+                        self.session.index = idx
+                        self.show_current_feature()
 
     def _auto_identify_feature(self, feature):
         if not self.session or feature is None:
@@ -544,6 +627,7 @@ class CheckAKea(DockMixin):
                 Qt.NoModifier,
             ),
         )
+        self.iface.actionPan().trigger()
 
     # ------------------------------------------------------------------ zoom / highlight
 
@@ -614,6 +698,14 @@ class CheckAKea(DockMixin):
         fid = self.session.current_fid
         comment_text = self.comment_box.toPlainText()
         comment_value = comment_text if comment_text else None
+        feature = self.session.current_feature()
+        if feature is not None:
+            existing = feature[comment_field]
+            if existing == QGIS_NULL:
+                if comment_value is None:
+                    return
+            elif existing == comment_value:
+                return
         if not self.session.layer.isEditable():
             self.session.layer.startEditing()
         self.session.layer.changeAttributeValue(fid, field_index, comment_value)
@@ -660,32 +752,19 @@ class CheckAKea(DockMixin):
 
     def _get_ordered_fids_from_attr_table(self):
         """Return FIDs in the order currently shown in the open attribute table, or None."""
-        if not self.session:
+        _, model = self._find_attr_table_view()
+        if model is None:
             return None
-        for widget in QApplication.instance().allWidgets():
-            if not hasattr(widget, "model") or not hasattr(widget, "scrollTo"):
-                continue
-            try:
-                raw = widget.model()
-                if raw is None:
-                    continue
-                if raw.metaObject().className() != "QgsAttributeTableFilterModel":
-                    continue
-                model = sip.wrapinstance(
-                    sip.unwrapinstance(raw), QgsAttributeTableFilterModel
-                )
-                if model.layer().id() != self.session.layer.id():
-                    continue
-                master = sip.wrapinstance(
-                    sip.unwrapinstance(model.masterModel()), QgsAttributeTableModel
-                )
-                return [
-                    master.rowToId(model.mapToSource(model.index(row, 0)).row())
-                    for row in range(model.rowCount())
-                ]
-            except Exception:
-                pass
-        return None
+        try:
+            master = sip.wrapinstance(
+                sip.unwrapinstance(model.masterModel()), QgsAttributeTableModel
+            )
+            return [
+                master.rowToId(model.mapToSource(model.index(row, 0)).row())
+                for row in range(model.rowCount())
+            ]
+        except Exception:
+            return None
 
     def _navigate(self, delta):
         if not self.session or self.session.waiting_to_advance:

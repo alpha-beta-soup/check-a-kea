@@ -16,6 +16,8 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtCore import Qt, QTimer
 
+from qgis.core import QgsApplication
+
 from .histogram import HistogramWidget
 from .utils import tr
 from .widgets import CommentFocusGuard
@@ -70,6 +72,7 @@ class DockMixin:
         setup_button = QPushButton(tr("Settings / preferences"))
         setup_button.clicked.connect(self.open_config_dialog)
         layout.addWidget(setup_button)
+        layout.addLayout(self._build_edit_section())
 
     def _build_attribute_table(self):
         self.attribute_table = QTableWidget(0, 2)
@@ -118,6 +121,30 @@ class DockMixin:
         layout = QHBoxLayout()
         layout.addWidget(prev_button)
         layout.addWidget(next_button)
+        return layout
+
+    def _build_edit_section(self):
+        self.save_edits_button = QPushButton(tr("Save edits"))
+        self.save_edits_button.setIcon(
+            QgsApplication.getThemeIcon("mActionSaveEdits.svg")
+        )
+        self.save_edits_button.setToolTip(tr("Commit all edits to the layer data source."))
+        self.save_edits_button.setEnabled(False)
+        self.save_edits_button.clicked.connect(self.save_layer_edits)
+
+        self.discard_edits_button = QPushButton(tr("Discard edits"))
+        self.discard_edits_button.setIcon(
+            QgsApplication.getThemeIcon("mActionRollbackEdits.svg")
+        )
+        self.discard_edits_button.setToolTip(
+            tr("Roll back all unsaved edits and restart the queue.")
+        )
+        self.discard_edits_button.setEnabled(False)
+        self.discard_edits_button.clicked.connect(self.discard_layer_edits)
+
+        layout = QHBoxLayout()
+        layout.addWidget(self.save_edits_button)
+        layout.addWidget(self.discard_edits_button)
         return layout
 
     def _build_validation_controls(self):
